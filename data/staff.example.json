@@ -1,0 +1,5 @@
+[
+  {"id": "S101", "name": "Demo Staff One", "pin": "1111", "roles": ["driver", "conductor"]},
+  {"id": "S102", "name": "Demo Staff Two", "pin": "2222", "roles": ["driver", "conductor"]},
+  {"id": "S103", "name": "Demo Staff Three", "pin": "3333", "roles": ["driver", "conductor"]}
+]
