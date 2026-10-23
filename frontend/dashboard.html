@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YanaBus Authority Dashboard</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body style="display:block">
+<header class="top">
+  <div class="brand">YanaBus <span>Transport authority dashboard</span></div>
+  <nav class="links"><a href="/?demo">Passenger map</a><a href="conductor.html">Conductor</a></nav>
+</header>
+
+<div class="page">
+  <p class="note">Based on <span id="nDays"></span> days of trip history (simulated data for the prototype). Weekdays only.</p>
+
+  <div class="tiles">
+    <div class="card tile"><div class="num" id="tRecords">-</div><div class="lbl">section records analysed</div></div>
+    <div class="card tile"><div class="num" id="tWorst">-</div><div class="lbl" id="tWorstLbl">route that is late most often</div></div>
+    <div class="card tile"><div class="num" id="tAi">-</div><div class="lbl">AI average error per trip (minutes)</div></div>
+    <div class="card tile"><div class="num" id="tBase">-</div><div class="lbl">error with a normal timetable (minutes)</div></div>
+  </div>
+
+  <div class="grid2">
+    <section class="card"><h2>Routes that are late most often</h2>
+      <p class="note" id="lateNote"></p>
+      <div class="chartbox"><canvas id="cLate"></canvas></div></section>
+    <section class="card"><h2>Delay by hour of the day</h2>
+      <p class="note">How much slower than normal a trip is, by the hour it starts.</p>
+      <div class="chartbox"><canvas id="cHour"></canvas></div></section>
+    <section class="card"><h2>Five slowest road sections</h2>
+      <p class="note">Average extra minutes on the section compared with free road.</p>
+      <div class="chartbox"><canvas id="cWorst"></canvas></div></section>
+    <section class="card"><h2>How accurate is the AI?</h2>
+      <p class="note">Average error of the predicted trip time on days the model never saw. Lower is better.</p>
+      <div class="chartbox"><canvas id="cModel"></canvas></div></section>
+  </div>
+
+  <section class="card" style="margin-top:12px">
+    <h2>Speed heatmap: Galle - Hikkaduwa</h2>
+    <label for="hourRange" style="margin-top:0">Hour of day: <b id="hourLbl">08:00</b></label>
+    <input type="range" id="hourRange" min="5" max="21" value="8" style="width:100%">
+    <div id="heat" style="margin-top:10px"></div>
+    <div class="legend">
+      <span style="--c:#d1342c">under 12 km/h</span><span style="--c:#e07b00">12 to 20</span>
+      <span style="--c:#c9b200">20 to 27</span><span style="--c:#17894c">27 km/h or more</span>
+    </div>
+  </section>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const COLORS = ["#0f766e", "#2563eb", "#d97706", "#9333ea", "#d1342c"];
+
+Chart.defaults.color = css("--muted");
+Chart.defaults.borderColor = css("--line");
+Chart.defaults.font.family = "system-ui, sans-serif";
+
+async function load() {
+  const d = await (await fetch("/api/analytics/summary")).json();
+  $("nDays").textContent = d.days;
+  $("tRecords").textContent = d.records.toLocaleString();
+  const worst = d.routes[0];
+  $("tWorst").textContent = worst.route.replace("Galle - ", "Galle-");
+  $("tWorstLbl").textContent = `late on ${Math.round(worst.late_trips_pct)}% of trips`;
+  if (d.model) {
+    $("tAi").textContent = d.model.trip_mae_min.ai_model.toFixed(1);
+    $("tBase").textContent = d.model.trip_mae_min.timetable.toFixed(1);
+  }
+  $("lateNote").textContent = `A trip is late when it is more than ${d.late_limit_pct}% slower than normal.`;
+
+  new Chart($("cLate"), {
+    type: "bar",
+    data: { labels: d.routes.map(r => r.route),
+      datasets: [{ label: "Late trips (%)", data: d.routes.map(r => r.late_trips_pct), backgroundColor: COLORS[4] }] },
+    options: { indexAxis: "y", maintainAspectRatio: false, plugins: { legend: { display: false } },
+      scales: { x: { title: { display: true, text: "% of trips that were late" }, max: 100 } } }
+  });
+
+  const names = Object.keys(d.hours.series);
+  new Chart($("cHour"), {
+    type: "line",
+    data: { labels: d.hours.labels.map(h => String(h).padStart(2, "0") + ":00"),
+      datasets: names.map((n, i) => ({ label: n, data: d.hours.series[n], borderColor: COLORS[i % 5],
+        backgroundColor: COLORS[i % 5], tension: .3, pointRadius: 2 })) },
+    options: { maintainAspectRatio: false,
+      scales: { y: { title: { display: true, text: "% slower than normal" } } },
+      plugins: { legend: { labels: { boxWidth: 12 } } } }
+  });
+
+  new Chart($("cWorst"), {
+    type: "bar",
+    data: { labels: d.worst_sections.map(s => `${s.section} (${s.route.replace("Galle - ", "")})`),
+      datasets: [{ label: "Extra minutes", data: d.worst_sections.map(s => s.avg_delay_min), backgroundColor: COLORS[2] }] },
+    options: { indexAxis: "y", maintainAspectRatio: false, plugins: { legend: { display: false },
+      tooltip: { callbacks: { afterLabel: c => d.worst_sections[c.dataIndex].route } } },
+      scales: { x: { title: { display: true, text: "average extra minutes" } } } }
+  });
+
+  if (d.model) {
+    const m = d.model.trip_mae_min;
+    new Chart($("cModel"), {
+      type: "bar",
+      data: { labels: ["AI model (live phones)", "Historical average", "Normal timetable"],
+        datasets: [{ data: [m.ai_model, m.hist_avg, m.timetable], backgroundColor: [COLORS[0], COLORS[1], "#8a98a5"] }] },
+      options: { maintainAspectRatio: false, plugins: { legend: { display: false } },
+        scales: { y: { title: { display: true, text: "average error (minutes)" }, beginAtZero: true } } }
+    });
+  }
+}
+
+// ---- heatmap ----
+const heat = L.map("heat");
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+  { maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" }).addTo(heat);
+let heatLayer = null, fitted = false;
+const speedColor = v => v < 12 ? "#d1342c" : v < 20 ? "#e07b00" : v < 27 ? "#c9b200" : "#17894c";
+
+async function loadHeat() {
+  const hour = +$("hourRange").value;
+  $("hourLbl").textContent = String(hour).padStart(2, "0") + ":00";
+  const secs = await (await fetch("/api/analytics/heatmap?hour=" + hour)).json();
+  if (heatLayer) heatLayer.remove();
+  heatLayer = L.layerGroup().addTo(heat);
+  const all = [];
+  secs.forEach(s => {
+    L.polyline(s.path, { color: speedColor(s.speed_kmh), weight: 8, opacity: .95 })
+      .bindTooltip(`${s.section}: ${s.speed_kmh} km/h`, { sticky: true }).addTo(heatLayer);
+    all.push(...s.path);
+  });
+  if (!fitted) {
+    fitted = true;
+    const fit = () => { heat.invalidateSize(); heat.fitBounds(all, { padding: [20, 20] }); };
+    fit(); setTimeout(fit, 400);
+  }
+}
+$("hourRange").addEventListener("input", loadHeat);
+load();
+loadHeat();
+</script>
+</body>
+</html>

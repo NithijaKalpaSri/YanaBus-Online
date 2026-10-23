@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YanaBus Passenger</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">YanaBus <span>Galle - Hikkaduwa</span></div>
+  <div class="clock"><b id="clock">--:--</b> <span id="mode" class="chip">...</span></div>
+</header>
+<div id="alert" class="alert" hidden></div>
+
+<div class="layout">
+  <div id="map"></div>
+  <aside class="panel">
+    <section class="card" id="stopCard">
+      <h2 id="stopTitle">Next buses</h2>
+      <div id="stopBody"><p class="hint">Tap a stop (yellow dot) on the map to see when the next bus arrives and how crowded it is.</p></div>
+    </section>
+
+    <section class="card">
+      <h2>All buses right now</h2>
+      <table class="bus-table">
+        <thead><tr><th>Bus</th><th>Next stop</th><th>Crowd</th></tr></thead>
+        <tbody id="busRows"></tbody>
+      </table>
+      <p class="note" id="tripNote"></p>
+    </section>
+
+    <details class="card" id="demo" hidden open>
+      <summary><b>Demo controls</b></summary>
+      <label>Time of day</label>
+      <div class="btn-row">
+        <button class="btn sm" data-hour="8">08:00 Morning peak</button>
+        <button class="btn sm" data-hour="14">14:00 Off-peak</button>
+        <button class="btn sm" data-hour="17.75">17:45 Evening peak</button>
+      </div>
+      <label><input type="checkbox" id="clockRun"> Let the clock run</label>
+      <label>Traffic jam / accident</label>
+      <select id="incSeg"></select>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn sm" id="incOn">Add jam</button>
+        <button class="btn sm" id="incOff">Clear jams</button>
+      </div>
+    </details>
+  </aside>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const isDemo = new URLSearchParams(location.search).has("demo");
+let selectedStop = null;
+let stops = [], stopMarkers = [], line = null;
+const busMarkers = {};
+
+const map = L.map("map", { zoomSnap: 0.25 });
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+  { maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" }).addTo(map);
+
+async function api(path, body) {
+  const res = await fetch(path, body ? {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+  } : undefined);
+  if (!res.ok) throw new Error(path + " " + res.status);
+  return res.json();
+}
+
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+function crowdChip(level, label) {
+  const s = document.createElement("span");
+  s.className = "chip";
+  const d = document.createElement("span"); d.className = "dot " + level;
+  s.append(d, label);
+  return s;
+}
+
+function busIcon(b) {
+  const arrow = b.direction === 1 ? "&#8594;" : "&#8592;";
+  return L.divIcon({
+    className: "", iconSize: null,
+    html: `<div class="busmark ${b.crowd} ${b.direction === 1 ? "" : "back"}">${arrow} ${b.id.replace("SP ", "")}</div>`
+  });
+}
+
+async function init() {
+  const r = await api("/api/route");
+  stops = r.stops;
+  line = L.polyline(r.line, { color: "#d1342c", weight: 5, opacity: .85 }).addTo(map);
+  map.fitBounds(line.getBounds(), { padding: [20, 20] });
+
+  stops.forEach(s => {
+    const m = L.circleMarker([s.lat, s.lng], {
+      radius: 8, color: "#003049", weight: 2, fillColor: "#fcbf49", fillOpacity: 1
+    }).addTo(map);
+    m.bindTooltip(s.name, { direction: "top" });
+    m.on("click", () => selectStop(s.id));
+    stopMarkers.push(m);
+  });
+
+  if (isDemo) {
+    $("demo").hidden = false;
+    r.sections.forEach((n, i) => {
+      const o = document.createElement("option"); o.value = i; o.textContent = n;
+      $("incSeg").append(o);
+    });
+    $("incSeg").value = 3;
+  }
+  await refresh();
+  setInterval(refresh, 1500);
+  // fit the route once the page layout has settled (and again if the window changes)
+  const fit = () => { map.invalidateSize(); map.fitBounds(line.getBounds(), { padding: [20, 20] }); };
+  setTimeout(fit, 300);
+  window.addEventListener("resize", fit);
+}
+
+function selectStop(id) {
+  selectedStop = id;
+  stopMarkers.forEach((m, i) => m.setStyle({ fillColor: i === id ? "#1b9aaa" : "#fcbf49", radius: i === id ? 11 : 8 }));
+  refreshStop();
+  if (window.innerWidth < 900) $("stopCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function refreshStop() {
+  if (selectedStop === null) return;
+  const d = await api(`/api/stops/${selectedStop}/eta`);
+  $("stopTitle").textContent = "Next buses at " + d.stop;
+  const body = $("stopBody"); body.replaceChildren();
+  if (!d.buses.length) {
+    const p = document.createElement("p"); p.className = "hint";
+    p.textContent = "No bus is heading to this stop right now."; body.append(p); return;
+  }
+  d.buses.forEach(b => {
+    const row = document.createElement("div"); row.className = "eta-row";
+    const left = document.createElement("div");
+    const t = document.createElement("b"); t.textContent = b.bus;
+    left.append(t, " to " + b.heading);
+    const big = document.createElement("div"); big.className = "big";
+    big.textContent = b.eta_min < 1 ? "Now" : Math.round(b.eta_min) + " min";
+    const sub = document.createElement("div"); sub.className = "sub";
+    sub.append(crowdChip(b.crowd, b.crowd_label), ` ${b.passengers}/50`);
+    row.append(left, big, sub);
+    body.append(row);
+  });
+}
+
+async function refresh() {
+  let s;
+  try { s = await api("/api/state"); } catch (e) { return; }
+  $("clock").textContent = s.time;
+  $("mode").textContent = s.mode;
+  const alert = $("alert");
+  const jam = s.incidents.length ? "Jam reported near " + s.incidents.map(i => i.name).join(", ") + ". " : "";
+  alert.hidden = !(s.alert || jam);
+  alert.textContent = jam + (s.alert || "");
+  $("tripNote").textContent =
+    `A full trip takes about ${Math.round(s.trip_min_now)} min now (${s.trip_min_offpeak} min when the road is clear).`;
+  if (isDemo) $("clockRun").checked = s.clock_running;
+
+  const rows = $("busRows"); rows.replaceChildren();
+  s.buses.forEach(b => {
+    let m = busMarkers[b.id];
+    if (!m) { m = busMarkers[b.id] = L.marker([b.lat, b.lng], { icon: busIcon(b), zIndexOffset: 500 }).addTo(map); }
+    m.setLatLng([b.lat, b.lng]);
+    m.setIcon(busIcon(b));
+    m.bindTooltip(`${b.id} to ${b.heading}<br>${b.crowd_label} (${b.passengers}/${b.seats})<br>${b.speed_kmh} km/h`);
+
+    const tr = document.createElement("tr");
+    const c1 = document.createElement("td"); c1.textContent = b.id.replace("SP ", "");
+    const c2 = document.createElement("td"); c2.textContent = `${b.next_stop} (${Math.round(b.eta_next_min)} min)`;
+    const c3 = document.createElement("td"); c3.append(crowdChip(b.crowd, b.crowd_label));
+    tr.append(c1, c2, c3); rows.append(tr);
+  });
+  refreshStop().catch(() => {});
+}
+
+if (isDemo) {
+  document.querySelectorAll("[data-hour]").forEach(btn =>
+    btn.addEventListener("click", () => api("/api/demo/hour", { hour: +btn.dataset.hour }).then(refresh)));
+  $("clockRun").addEventListener("change", e => api("/api/demo/clock", { running: e.target.checked }));
+  $("incOn").addEventListener("click", () => api("/api/demo/incident", { segment: +$("incSeg").value, on: true }).then(() => { toast("Jam added"); refresh(); }));
+  $("incOff").addEventListener("click", async () => {
+    for (let i = 0; i < $("incSeg").options.length; i++) await api("/api/demo/incident", { segment: i, on: false });
+    toast("Jams cleared"); refresh();
+  });
+}
+init();
+</script>
+</body>
+</html>

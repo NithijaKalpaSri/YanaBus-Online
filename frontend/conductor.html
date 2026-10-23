@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YanaBus Conductor</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">YanaBus <span>Conductor</span></div>
+  <div class="clock"><b id="clock">--:--</b></div>
+</header>
+
+<div class="panel" style="max-width:520px;width:100%;margin:0 auto">
+  <section class="card">
+    <label for="busSel" style="margin-top:0">Your bus</label>
+    <select id="busSel"></select>
+    <p class="note" style="margin:8px 0 0"><span class="dot green"></span> Phone GPS is being shared (simulated in this prototype).</p>
+  </section>
+
+  <section class="card">
+    <h2 id="heading">...</h2>
+    <p class="hint" id="nextStop"></p>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0 6px">
+      <b id="count" style="font-size:1.6rem">0 / 50</b>
+      <span class="chip" id="levelChip"><span class="dot" id="levelDot"></span><span id="levelText"></span></span>
+    </div>
+    <div class="meter"><div id="meterFill" style="width:0"></div></div>
+  </section>
+
+  <section class="card">
+    <h2>Issue a ticket</h2>
+    <label for="dest" style="margin-top:0">Passenger gets off at</label>
+    <select id="dest"></select>
+    <button class="btn primary" id="ticketBtn" style="margin-top:10px">Issue ticket</button>
+  </section>
+
+  <section class="card">
+    <h2>How full is the bus?</h2>
+    <div class="btn-row">
+      <button class="btn" data-level="green"><span class="dot green"></span> Seats available</button>
+      <button class="btn" data-level="orange"><span class="dot orange"></span> Few seats left</button>
+      <button class="btn" data-level="red"><span class="dot red"></span> Standing only</button>
+    </div>
+    <button class="btn sm" data-level="auto" style="margin-top:8px">Back to automatic (from tickets)</button>
+    <p class="note">Your choice stays until the next stop.</p>
+  </section>
+</div>
+
+<div class="toast" id="toast"></div>
+<script>
+const $ = id => document.getElementById(id);
+let stops = [], current = null, destBuilt = "";
+
+async function api(path, body) {
+  const res = await fetch(path, body ? {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+  } : undefined);
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || res.status); }
+  return res.json();
+}
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 2200);
+}
+function savedBus() { try { return localStorage.getItem("yanabus-bus"); } catch (e) { return null; } }
+function saveBus(v) { try { localStorage.setItem("yanabus-bus", v); } catch (e) { /* not available */ } }
+
+async function init() {
+  stops = (await api("/api/route")).stops;
+  const s = await api("/api/state");
+  s.buses.forEach(b => {
+    const o = document.createElement("option"); o.value = b.id; o.textContent = b.id; $("busSel").append(o);
+  });
+  const prev = savedBus();
+  if (prev && s.buses.some(b => b.id === prev)) $("busSel").value = prev;
+  $("busSel").addEventListener("change", () => { saveBus($("busSel").value); destBuilt = ""; refresh(); });
+  await refresh();
+  setInterval(refresh, 1500);
+}
+
+function render(b) {
+  current = b;
+  $("heading").textContent = `${b.id} to ${b.heading}`;
+  $("nextStop").textContent = `Next stop: ${b.next_stop} in about ${Math.round(b.eta_next_min)} min`;
+  $("count").textContent = `${b.passengers} / ${b.seats}`;
+  $("levelDot").className = "dot " + b.crowd;
+  $("levelText").textContent = b.crowd_label;
+  const fill = $("meterFill");
+  fill.className = b.crowd;
+  fill.style.width = Math.min(100, b.passengers / b.seats * 100) + "%";
+
+  // destinations: stops the bus still visits
+  const ids = b.direction === 1
+    ? stops.filter(s => s.id >= b.next_stop_id) : stops.filter(s => s.id <= b.next_stop_id).reverse();
+  const key = b.id + ":" + ids.map(s => s.id).join(",");
+  if (key !== destBuilt) {
+    const keep = $("dest").value;
+    $("dest").replaceChildren();
+    ids.forEach(s => { const o = document.createElement("option"); o.value = s.id; o.textContent = s.name; $("dest").append(o); });
+    if (keep && ids.some(s => String(s.id) === keep)) $("dest").value = keep;
+    destBuilt = key;
+  }
+}
+
+async function refresh() {
+  try {
+    const s = await api("/api/state");
+    $("clock").textContent = s.time;
+    const b = s.buses.find(x => x.id === $("busSel").value);
+    if (b) render(b);
+  } catch (e) { /* server not reachable, try again */ }
+}
+
+$("ticketBtn").addEventListener("click", async () => {
+  try {
+    const b = await api("/api/conductor/ticket", { bus_id: current.id, to_stop: +$("dest").value });
+    toast("Ticket issued to " + stops[+$("dest").value].name);
+    render(b);
+  } catch (e) { toast(e.message); }
+});
+document.querySelectorAll("[data-level]").forEach(btn => btn.addEventListener("click", async () => {
+  try {
+    render(await api("/api/conductor/crowd", { bus_id: current.id, level: btn.dataset.level }));
+    toast("Crowd level sent");
+  } catch (e) { toast(e.message); }
+}));
+init();
+</script>
+</body>
+</html>
