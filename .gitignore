@@ -1,0 +1,26 @@
+# ---- Python ----
+.venv/
+__pycache__/
+*.pyc
+
+# ---- generated, rebuild with the ml/ scripts (see README) ----
+data/history.csv
+models/
+data/preview_route.html
+
+# ---- personal demo accounts: copy data/staff.example.json to data/staff.json and edit it ----
+data/staff.json
+
+# ---- web app ----
+web/node_modules/
+web/dist/
+
+# ---- phone apps (mobile/.gitignore covers the rest) ----
+mobile/node_modules/
+mobile/.expo/
+
+# ---- editors, tools, operating system ----
+.idea/
+.claude/
+**/.claude/
+.DS_Store
